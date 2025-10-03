@@ -1,7 +1,7 @@
 (async () => {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  const YOUR_USER = "insider1";      // <-- AJUSTA
-  const YOUR_PASS = "insideer";      // <-- AJUSTA
+  const YOUR_USER = "user";      // <-- AJUSTA
+  const YOUR_PASS = "pass";      // <-- AJUSTA
   const MAX_ID    = 200;
   const CHUNK     = 900;
 
